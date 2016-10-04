@@ -1,4 +1,4 @@
-package oci
+package layout
 
 import (
 	"errors"
@@ -12,7 +12,7 @@ import (
 	"github.com/docker/docker/reference"
 )
 
-// Transport is an ImageTransport for Docker references.
+// Transport is an ImageTransport for OCI directories.
 var Transport = ociTransport{}
 
 type ociTransport struct{}
@@ -165,18 +165,28 @@ func (ref ociReference) PolicyConfigurationNamespaces() []string {
 }
 
 // NewImage returns a types.Image for this reference.
-func (ref ociReference) NewImage(certPath string, tlsVerify bool) (types.Image, error) {
+// The caller must call .Close() on the returned Image.
+func (ref ociReference) NewImage(ctx *types.SystemContext) (types.Image, error) {
 	return nil, errors.New("Full Image support not implemented for oci: image names")
 }
 
-// NewImageSource returns a types.ImageSource for this reference.
-func (ref ociReference) NewImageSource(certPath string, tlsVerify bool) (types.ImageSource, error) {
+// NewImageSource returns a types.ImageSource for this reference,
+// asking the backend to use a manifest from requestedManifestMIMETypes if possible.
+// nil requestedManifestMIMETypes means manifest.DefaultRequestedManifestMIMETypes.
+// The caller must call .Close() on the returned ImageSource.
+func (ref ociReference) NewImageSource(ctx *types.SystemContext, requestedManifestMIMETypes []string) (types.ImageSource, error) {
 	return nil, errors.New("Reading images not implemented for oci: image names")
 }
 
 // NewImageDestination returns a types.ImageDestination for this reference.
-func (ref ociReference) NewImageDestination(certPath string, tlsVerify bool) (types.ImageDestination, error) {
+// The caller must call .Close() on the returned ImageDestination.
+func (ref ociReference) NewImageDestination(ctx *types.SystemContext) (types.ImageDestination, error) {
 	return newImageDestination(ref), nil
+}
+
+// DeleteImage deletes the named image from the registry, if supported.
+func (ref ociReference) DeleteImage(ctx *types.SystemContext) error {
+	return fmt.Errorf("Deleting images not implemented for oci: images")
 }
 
 // ociLayoutPathPath returns a path for the oci-layout within a directory using OCI conventions.
@@ -185,8 +195,12 @@ func (ref ociReference) ociLayoutPath() string {
 }
 
 // blobPath returns a path for a blob within a directory using OCI image-layout conventions.
-func (ref ociReference) blobPath(digest string) string {
-	return filepath.Join(ref.dir, "blobs", strings.Replace(digest, ":", "-", -1))
+func (ref ociReference) blobPath(digest string) (string, error) {
+	pts := strings.SplitN(digest, ":", 2)
+	if len(pts) != 2 {
+		return "", fmt.Errorf("unexpected digest reference %s", digest)
+	}
+	return filepath.Join(ref.dir, "blobs", pts[0], pts[1]), nil
 }
 
 // descriptorPath returns a path for the manifest within a directory using OCI conventions.

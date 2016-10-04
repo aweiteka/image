@@ -71,68 +71,120 @@ type ImageReference interface {
 	PolicyConfigurationNamespaces() []string
 
 	// NewImage returns a types.Image for this reference.
-	NewImage(certPath string, tlsVerify bool) (Image, error)
-	// NewImageSource returns a types.ImageSource for this reference.
-	NewImageSource(certPath string, tlsVerify bool) (ImageSource, error)
+	// The caller must call .Close() on the returned Image.
+	NewImage(ctx *SystemContext) (Image, error)
+	// NewImageSource returns a types.ImageSource for this reference,
+	// asking the backend to use a manifest from requestedManifestMIMETypes if possible.
+	// nil requestedManifestMIMETypes means manifest.DefaultRequestedManifestMIMETypes.
+	// The caller must call .Close() on the returned ImageSource.
+	NewImageSource(ctx *SystemContext, requestedManifestMIMETypes []string) (ImageSource, error)
 	// NewImageDestination returns a types.ImageDestination for this reference.
-	NewImageDestination(certPath string, tlsVerify bool) (ImageDestination, error)
+	// The caller must call .Close() on the returned ImageDestination.
+	NewImageDestination(ctx *SystemContext) (ImageDestination, error)
+
+	// DeleteImage deletes the named image from the registry, if supported.
+	DeleteImage(ctx *SystemContext) error
+}
+
+// BlobInfo collects known information about a blob (layer/config).
+// In some situations, some fields may be unknown, in others they may be mandatory; documenting an “unknown” value here does not override that.
+type BlobInfo struct {
+	Digest string // "" if unknown.
+	Size   int64  // -1 if unknown
 }
 
 // ImageSource is a service, possibly remote (= slow), to download components of a single image.
 // This is primarily useful for copying images around; for examining their properties, Image (below)
 // is usually more useful.
+// Each ImageSource should eventually be closed by calling Close().
 type ImageSource interface {
 	// Reference returns the reference used to set up this source, _as specified by the user_
 	// (not as the image itself, or its underlying storage, claims).  This can be used e.g. to determine which public keys are trusted for this image.
 	Reference() ImageReference
-	// GetManifest returns the image's manifest along with its MIME type. The empty string is returned if the MIME type is unknown. The slice parameter indicates the supported mime types the manifest should be when getting it.
+	// Close removes resources associated with an initialized ImageSource, if any.
+	Close()
+	// GetManifest returns the image's manifest along with its MIME type. The empty string is returned if the MIME type is unknown.
 	// It may use a remote (= slow) service.
-	GetManifest([]string) ([]byte, string, error)
-	// Note: Calling GetBlob() may have ordering dependencies WRT other methods of this type. FIXME: How does this work with (docker save) on stdin?
-	// the second return value is the size of the blob. If not known 0 is returned
+	GetManifest() ([]byte, string, error)
+	// GetBlob returns a stream for the specified blob, and the blob’s size (or -1 if unknown).
 	GetBlob(digest string) (io.ReadCloser, int64, error)
 	// GetSignatures returns the image's signatures.  It may use a remote (= slow) service.
 	GetSignatures() ([][]byte, error)
-	// Delete image from registry, if operation is supported
-	Delete() error
 }
 
 // ImageDestination is a service, possibly remote (= slow), to store components of a single image.
+//
+// There is a specific required order for some of the calls:
+// PutBlob on the various blobs, if any, MUST be called before PutManifest (manifest references blobs, which may be created or compressed only at push time)
+// PutSignatures, if called, MUST be called after PutManifest (signatures reference manifest contents)
+// Finally, Commit MUST be called if the caller wants the image, as formed by the components saved above, to persist.
+//
+// Each ImageDestination should eventually be closed by calling Close().
 type ImageDestination interface {
 	// Reference returns the reference used to set up this destination.  Note that this should directly correspond to user's intent,
 	// e.g. it should use the public hostname instead of the result of resolving CNAMEs or following redirects.
 	Reference() ImageReference
-	// FIXME? This should also receive a MIME type if known, to differentiate between schema versions.
-	PutManifest([]byte) error
-	// PutBlob writes contents of stream as a blob identified by digest.
-	// WARNING: The contents of stream are being verified on the fly.  Until stream.Read() returns io.EOF, the contents of the data SHOULD NOT be available
-	// to any other readers for download using the supplied digest.
-	// If stream.Read() at any time, ESPECIALLY at end of input, returns an error, PutBlob MUST 1) fail, and 2) delete any data stored so far.
-	// Note: Calling PutBlob() and other methods may have ordering dependencies WRT other methods of this type. FIXME: Figure out and document.
-	PutBlob(digest string, stream io.Reader) error
-	PutSignatures(signatures [][]byte) error
+	// Close removes resources associated with an initialized ImageDestination, if any.
+	Close()
+
 	// SupportedManifestMIMETypes tells which manifest mime types the destination supports
 	// If an empty slice or nil it's returned, then any mime type can be tried to upload
 	SupportedManifestMIMETypes() []string
+	// SupportsSignatures returns an error (to be displayed to the user) if the destination certainly can't store signatures.
+	// Note: It is still possible for PutSignatures to fail if SupportsSignatures returns nil.
+	SupportsSignatures() error
+	// ShouldCompressLayers returns true iff it is desirable to compress layer blobs written to this destination.
+	ShouldCompressLayers() bool
+
+	// PutBlob writes contents of stream and returns data representing the result (with all data filled in).
+	// inputInfo.Digest can be optionally provided if known; it is not mandatory for the implementation to verify it.
+	// inputInfo.Size is the expected length of stream, if known.
+	// WARNING: The contents of stream are being verified on the fly.  Until stream.Read() returns io.EOF, the contents of the data SHOULD NOT be available
+	// to any other readers for download using the supplied digest.
+	// If stream.Read() at any time, ESPECIALLY at end of input, returns an error, PutBlob MUST 1) fail, and 2) delete any data stored so far.
+	PutBlob(stream io.Reader, inputInfo BlobInfo) (BlobInfo, error)
+	// FIXME? This should also receive a MIME type if known, to differentiate between schema versions.
+	PutManifest([]byte) error
+	PutSignatures(signatures [][]byte) error
+	// Commit marks the process of storing the image as successful and asks for the image to be persisted.
+	// WARNING: This does not have any transactional semantics:
+	// - Uploaded data MAY be visible to others before Commit() is called
+	// - Uploaded data MAY be removed or MAY remain around if Close() is called without Commit() (i.e. rollback is allowed but not guaranteed)
+	Commit() error
 }
 
 // Image is the primary API for inspecting properties of images.
+// Each Image should eventually be closed by calling Close().
 type Image interface {
 	// Reference returns the reference used to set up this source, _as specified by the user_
 	// (not as the image itself, or its underlying storage, claims).  This can be used e.g. to determine which public keys are trusted for this image.
 	Reference() ImageReference
+	// Close removes resources associated with an initialized Image, if any.
+	Close()
 	// ref to repository?
 	// Manifest is like ImageSource.GetManifest, but the result is cached; it is OK to call this however often you need.
-	// NOTE: It is essential for signature verification that Manifest returns the manifest from which BlobDigests is computed.
+	// NOTE: It is essential for signature verification that Manifest returns the manifest from which ConfigInfo and LayerInfos is computed.
 	Manifest() ([]byte, string, error)
 	// Signatures is like ImageSource.GetSignatures, but the result is cached; it is OK to call this however often you need.
 	Signatures() ([][]byte, error)
-	// BlobDigests returns a list of blob digests referenced by this image.
-	// The list will not contain duplicates; it is not intended to correspond to the "history" or "parent chain" of a Docker image.
-	// NOTE: It is essential for signature verification that BlobDigests is computed from the same manifest which is returned by Manifest().
-	BlobDigests() ([]string, error)
+	// ConfigInfo returns a complete BlobInfo for the separate config object, or a BlobInfo{Digest:""} if there isn't a separate object.
+	// NOTE: It is essential for signature verification that ConfigInfo is computed from the same manifest which is returned by Manifest().
+	ConfigInfo() (BlobInfo, error)
+	// LayerInfos returns a list of BlobInfos of layers referenced by this image, in order (the root layer first, and then successive layered layers).
+	// The Digest field is guaranteed to be provided; Size may be -1.
+	// NOTE: It is essential for signature verification that LayerInfos is computed from the same manifest which is returned by Manifest().
+	// WARNING: The list may contain duplicates, and they are semantically relevant.
+	LayerInfos() ([]BlobInfo, error)
 	// Inspect returns various information for (skopeo inspect) parsed from the manifest and configuration.
 	Inspect() (*ImageInspectInfo, error)
+	// UpdatedManifest returns the image's manifest modified according to options.
+	// This does not change the state of the Image object.
+	UpdatedManifest(options ManifestUpdateOptions) ([]byte, error)
+}
+
+// ManifestUpdateOptions is a way to pass named optional arguments to Image.UpdatedManifest
+type ManifestUpdateOptions struct {
+	LayerInfos []BlobInfo // Complete BlobInfos (size+digest) which should replace the originals, in order (the root layer first, and then successive layered layers)
 }
 
 // ImageInspectInfo is a set of metadata describing Docker images, primarily their manifest and configuration.
@@ -146,4 +198,29 @@ type ImageInspectInfo struct {
 	Architecture  string
 	Os            string
 	Layers        []string
+}
+
+// SystemContext allows parametrizing access to implicitly-accessed resources,
+// like configuration files in /etc and users' login state in their home directory.
+// Various components can share the same field only if their semantics is exactly
+// the same; if in doubt, add a new field.
+// It is always OK to pass nil instead of a SystemContext.
+type SystemContext struct {
+	// If not "", prefixed to any absolute paths used by default by the library (e.g. in /etc/).
+	// Not used for any of the more specific path overrides available in this struct.
+	// Not used for any paths specified by users in config files (even if the location of the config file _was_ affected by it).
+	// NOTE: If this is set, environment-variable overrides of paths are ignored (to keep the semantics simple: to create an /etc replacement, just set RootForImplicitAbsolutePaths .
+	// and there is no need to worry about the environment.)
+	// NOTE: This does NOT affect paths starting by $HOME.
+	RootForImplicitAbsolutePaths string
+
+	// === Global configuration overrides ===
+	// If not "", overrides the system's default path for signature.Policy configuration.
+	SignaturePolicyPath string
+	// If not "", overrides the system's default path for registries.d (Docker signature storage configuration)
+	RegistriesDirPath string
+
+	// === docker.Transport overrides ===
+	DockerCertPath              string // If not "", a directory containing "cert.pem" and "key.pem" used when talking to a Docker Registry
+	DockerInsecureSkipTLSVerify bool   // Allow contacting docker registries over HTTP, or HTTPS with failed TLS verification. Note that this does not affect other TLS connections.
 }

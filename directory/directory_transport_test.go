@@ -149,22 +149,32 @@ func TestReferencePolicyConfigurationNamespaces(t *testing.T) {
 func TestReferenceNewImage(t *testing.T) {
 	ref, tmpDir := refToTempDir(t)
 	defer os.RemoveAll(tmpDir)
-	_, err := ref.NewImage("/this/doesn't/exist", true)
+	img, err := ref.NewImage(nil)
 	assert.NoError(t, err)
+	defer img.Close()
 }
 
 func TestReferenceNewImageSource(t *testing.T) {
 	ref, tmpDir := refToTempDir(t)
 	defer os.RemoveAll(tmpDir)
-	_, err := ref.NewImageSource("/this/doesn't/exist", true)
+	src, err := ref.NewImageSource(nil, nil)
 	assert.NoError(t, err)
+	defer src.Close()
 }
 
 func TestReferenceNewImageDestination(t *testing.T) {
 	ref, tmpDir := refToTempDir(t)
 	defer os.RemoveAll(tmpDir)
-	_, err := ref.NewImageDestination("/this/doesn't/exist", true)
+	dest, err := ref.NewImageDestination(nil)
 	assert.NoError(t, err)
+	defer dest.Close()
+}
+
+func TestReferenceDeleteImage(t *testing.T) {
+	ref, tmpDir := refToTempDir(t)
+	defer os.RemoveAll(tmpDir)
+	err := ref.DeleteImage(nil)
+	assert.Error(t, err)
 }
 
 func TestReferenceManifestPath(t *testing.T) {

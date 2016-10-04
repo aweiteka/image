@@ -128,19 +128,29 @@ func (ref dirReference) PolicyConfigurationNamespaces() []string {
 }
 
 // NewImage returns a types.Image for this reference.
-func (ref dirReference) NewImage(certPath string, tlsVerify bool) (types.Image, error) {
+// The caller must call .Close() on the returned Image.
+func (ref dirReference) NewImage(ctx *types.SystemContext) (types.Image, error) {
 	src := newImageSource(ref)
-	return image.FromSource(src, nil), nil
+	return image.FromSource(src), nil
 }
 
-// NewImageSource returns a types.ImageSource for this reference.
-func (ref dirReference) NewImageSource(certPath string, tlsVerify bool) (types.ImageSource, error) {
+// NewImageSource returns a types.ImageSource for this reference,
+// asking the backend to use a manifest from requestedManifestMIMETypes if possible.
+// nil requestedManifestMIMETypes means manifest.DefaultRequestedManifestMIMETypes.
+// The caller must call .Close() on the returned ImageSource.
+func (ref dirReference) NewImageSource(ctx *types.SystemContext, requestedManifestMIMETypes []string) (types.ImageSource, error) {
 	return newImageSource(ref), nil
 }
 
 // NewImageDestination returns a types.ImageDestination for this reference.
-func (ref dirReference) NewImageDestination(certPath string, tlsVerify bool) (types.ImageDestination, error) {
+// The caller must call .Close() on the returned ImageDestination.
+func (ref dirReference) NewImageDestination(ctx *types.SystemContext) (types.ImageDestination, error) {
 	return newImageDestination(ref), nil
+}
+
+// DeleteImage deletes the named image from the registry, if supported.
+func (ref dirReference) DeleteImage(ctx *types.SystemContext) error {
+	return fmt.Errorf("Deleting images not implemented for dir: images")
 }
 
 // manifestPath returns a path for the manifest within a directory using our conventions.

@@ -1,4 +1,4 @@
-package oci
+package layout
 
 import (
 	"io/ioutil"
@@ -205,22 +205,30 @@ func TestReferencePolicyConfigurationNamespaces(t *testing.T) {
 func TestReferenceNewImage(t *testing.T) {
 	ref, tmpDir := refToTempOCI(t)
 	defer os.RemoveAll(tmpDir)
-	_, err := ref.NewImage("/this/doesn't/exist", true)
+	_, err := ref.NewImage(nil)
 	assert.Error(t, err)
 }
 
 func TestReferenceNewImageSource(t *testing.T) {
 	ref, tmpDir := refToTempOCI(t)
 	defer os.RemoveAll(tmpDir)
-	_, err := ref.NewImageSource("/this/doesn't/exist", true)
+	_, err := ref.NewImageSource(nil, nil)
 	assert.Error(t, err)
 }
 
 func TestReferenceNewImageDestination(t *testing.T) {
 	ref, tmpDir := refToTempOCI(t)
 	defer os.RemoveAll(tmpDir)
-	_, err := ref.NewImageDestination("/this/doesn't/exist", true)
+	dest, err := ref.NewImageDestination(nil)
 	assert.NoError(t, err)
+	defer dest.Close()
+}
+
+func TestReferenceDeleteImage(t *testing.T) {
+	ref, tmpDir := refToTempOCI(t)
+	defer os.RemoveAll(tmpDir)
+	err := ref.DeleteImage(nil)
+	assert.Error(t, err)
 }
 
 func TestReferenceOCILayoutPath(t *testing.T) {
@@ -238,7 +246,21 @@ func TestReferenceBlobPath(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 	ociRef, ok := ref.(ociReference)
 	require.True(t, ok)
-	assert.Equal(t, tmpDir+"/blobs/sha256-"+hex, ociRef.blobPath("sha256:"+hex))
+	bp, err := ociRef.blobPath("sha256:" + hex)
+	assert.NoError(t, err)
+	assert.Equal(t, tmpDir+"/blobs/sha256/"+hex, bp)
+}
+
+func TestReferenceBlobPathInvalid(t *testing.T) {
+	const hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	ref, tmpDir := refToTempOCI(t)
+	defer os.RemoveAll(tmpDir)
+	ociRef, ok := ref.(ociReference)
+	require.True(t, ok)
+	_, err := ociRef.blobPath(hex)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected digest reference "+hex)
 }
 
 func TestReferenceDescriptorPath(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io/ioutil"
+	"path/filepath"
 	"testing"
 
 	"github.com/containers/image/directory"
@@ -61,6 +62,63 @@ var policyFixtureContents = &Policy{
 			},
 		},
 	},
+}
+
+func TestDefaultPolicy(t *testing.T) {
+	// We can't test the actual systemDefaultPolicyPath, so override.
+	// TestDefaultPolicyPath below tests that we handle the overrides and defaults
+	// correctly.
+
+	// Success
+	policy, err := DefaultPolicy(&types.SystemContext{SignaturePolicyPath: "./fixtures/policy.json"})
+	require.NoError(t, err)
+	assert.Equal(t, policyFixtureContents, policy)
+
+	for _, path := range []string{
+		"/this/doesnt/exist", // Error reading file
+		"/dev/null",          // A failure case; most are tested in the individual method unit tests.
+	} {
+		policy, err := DefaultPolicy(&types.SystemContext{SignaturePolicyPath: path})
+		assert.Error(t, err)
+		assert.Nil(t, policy)
+	}
+}
+
+func TestDefaultPolicyPath(t *testing.T) {
+
+	const nondefaultPath = "/this/is/not/the/default/path.json"
+	const variableReference = "$HOME"
+	const rootPrefix = "/root/prefix"
+
+	for _, c := range []struct {
+		ctx      *types.SystemContext
+		expected string
+	}{
+		// The common case
+		{nil, systemDefaultPolicyPath},
+		// There is a context, but it does not override the path.
+		{&types.SystemContext{}, systemDefaultPolicyPath},
+		// Path overridden
+		{&types.SystemContext{SignaturePolicyPath: nondefaultPath}, nondefaultPath},
+		// Root overridden
+		{
+			&types.SystemContext{RootForImplicitAbsolutePaths: rootPrefix},
+			filepath.Join(rootPrefix, systemDefaultPolicyPath),
+		},
+		// Root and path overrides present simultaneously,
+		{
+			&types.SystemContext{
+				RootForImplicitAbsolutePaths: rootPrefix,
+				SignaturePolicyPath:          nondefaultPath,
+			},
+			nondefaultPath,
+		},
+		// No environment expansion happens in the overridden paths
+		{&types.SystemContext{SignaturePolicyPath: variableReference}, variableReference},
+	} {
+		path := defaultPolicyPath(c.ctx)
+		assert.Equal(t, c.expected, path)
+	}
 }
 
 func TestNewPolicyFromFile(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/docker/libtrust"
+	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,14 +18,14 @@ func TestGuessMIMEType(t *testing.T) {
 		path     string
 		mimeType string
 	}{
-		{"ociv1.manifest.json", OCIV1ImageManifestMIMEType},
-		{"ociv1list.manifest.json", OCIV1ImageManifestListMIMEType},
-		{"v2s2.manifest.json", DockerV2Schema2MIMEType},
-		{"v2list.manifest.json", DockerV2ListMIMEType},
-		{"v2s1.manifest.json", DockerV2Schema1SignedMIMEType},
-		{"v2s1-unsigned.manifest.json", DockerV2Schema1MIMEType},
-		{"v2s1-invalid-signatures.manifest.json", DockerV2Schema1SignedMIMEType},
-		{"v2s2nomime.manifest.json", DockerV2Schema2MIMEType}, // It is unclear whether this one is legal, but we should guess v2s2 if anything at all.
+		{"ociv1.manifest.json", imgspecv1.MediaTypeImageManifest},
+		{"ociv1list.manifest.json", imgspecv1.MediaTypeImageManifestList},
+		{"v2s2.manifest.json", DockerV2Schema2MediaType},
+		{"v2list.manifest.json", DockerV2ListMediaType},
+		{"v2s1.manifest.json", DockerV2Schema1SignedMediaType},
+		{"v2s1-unsigned.manifest.json", DockerV2Schema1MediaType},
+		{"v2s1-invalid-signatures.manifest.json", DockerV2Schema1SignedMediaType},
+		{"v2s2nomime.manifest.json", DockerV2Schema2MediaType}, // It is unclear whether this one is legal, but we should guess v2s2 if anything at all.
 		{"unknown-version.manifest.json", ""},
 		{"non-json.manifest.json", ""}, // Not a manifest (nor JSON) at all
 	}
@@ -101,4 +103,21 @@ func TestMatchesDigest(t *testing.T) {
 	res, err = MatchesDigest([]byte{}, "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 	assert.True(t, res)
 	assert.NoError(t, err)
+}
+
+func TestAddDummyV2S1Signature(t *testing.T) {
+	manifest, err := ioutil.ReadFile("fixtures/v2s1-unsigned.manifest.json")
+	require.NoError(t, err)
+
+	signedManifest, err := AddDummyV2S1Signature(manifest)
+	require.NoError(t, err)
+
+	sig, err := libtrust.ParsePrettySignature(signedManifest, "signatures")
+	require.NoError(t, err)
+	signaturePayload, err := sig.Payload()
+	require.NoError(t, err)
+	assert.Equal(t, manifest, signaturePayload)
+
+	_, err = AddDummyV2S1Signature([]byte("}this is invalid JSON"))
+	assert.Error(t, err)
 }

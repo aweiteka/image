@@ -160,22 +160,25 @@ func TestReferencePolicyConfigurationNamespaces(t *testing.T) {
 func TestReferenceNewImage(t *testing.T) {
 	ref, err := ParseReference("//busybox")
 	require.NoError(t, err)
-	_, err = ref.NewImage("", true)
+	img, err := ref.NewImage(&types.SystemContext{RegistriesDirPath: "/this/doesnt/exist"})
 	assert.NoError(t, err)
+	defer img.Close()
 }
 
 func TestReferenceNewImageSource(t *testing.T) {
 	ref, err := ParseReference("//busybox")
 	require.NoError(t, err)
-	_, err = ref.NewImageSource("", true)
+	src, err := ref.NewImageSource(&types.SystemContext{RegistriesDirPath: "/this/doesnt/exist"}, nil)
 	assert.NoError(t, err)
+	defer src.Close()
 }
 
 func TestReferenceNewImageDestination(t *testing.T) {
 	ref, err := ParseReference("//busybox")
 	require.NoError(t, err)
-	_, err = ref.NewImageDestination("", true)
+	dest, err := ref.NewImageDestination(&types.SystemContext{RegistriesDirPath: "/this/doesnt/exist"})
 	assert.NoError(t, err)
+	defer dest.Close()
 }
 
 func TestReferenceTagOrDigest(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/containers/image/types"
 	"github.com/docker/docker/pkg/homedir"
 )
 
@@ -35,53 +35,60 @@ const (
 
 // dockerClient is configuration for dealing with a single Docker registry.
 type dockerClient struct {
+	ctx             *types.SystemContext
 	registry        string
 	username        string
 	password        string
 	wwwAuthenticate string // Cache of a value set by ping() if scheme is not empty
 	scheme          string // Cache of a value returned by a successful ping() if not empty
 	client          *http.Client
+	signatureBase   signatureStorageBase
 }
 
 // newDockerClient returns a new dockerClient instance for refHostname (a host a specified in the Docker image reference, not canonicalized to dockerRegistry)
-func newDockerClient(refHostname, certPath string, tlsVerify bool) (*dockerClient, error) {
-	var registry string
-	if refHostname == dockerHostname {
+// “write” specifies whether the client will be used for "write" access (in particular passed to lookaside.go:toplevelFromSection)
+func newDockerClient(ctx *types.SystemContext, ref dockerReference, write bool) (*dockerClient, error) {
+	registry := ref.ref.Hostname()
+	if registry == dockerHostname {
 		registry = dockerRegistry
-	} else {
-		registry = refHostname
 	}
-	username, password, err := getAuth(refHostname)
+	username, password, err := getAuth(ref.ref.Hostname())
 	if err != nil {
 		return nil, err
 	}
 	var tr *http.Transport
-	if certPath != "" || !tlsVerify {
+	if ctx != nil && (ctx.DockerCertPath != "" || ctx.DockerInsecureSkipTLSVerify) {
 		tlsc := &tls.Config{}
 
-		if certPath != "" {
-			cert, err := tls.LoadX509KeyPair(filepath.Join(certPath, "cert.pem"), filepath.Join(certPath, "key.pem"))
+		if ctx.DockerCertPath != "" {
+			cert, err := tls.LoadX509KeyPair(filepath.Join(ctx.DockerCertPath, "cert.pem"), filepath.Join(ctx.DockerCertPath, "key.pem"))
 			if err != nil {
 				return nil, fmt.Errorf("Error loading x509 key pair: %s", err)
 			}
 			tlsc.Certificates = append(tlsc.Certificates, cert)
 		}
-		tlsc.InsecureSkipVerify = !tlsVerify
+		tlsc.InsecureSkipVerify = ctx.DockerInsecureSkipTLSVerify
 		tr = &http.Transport{
 			TLSClientConfig: tlsc,
 		}
 	}
-	client := &http.Client{
-		Timeout: 1 * time.Minute,
-	}
+	client := &http.Client{}
 	if tr != nil {
 		client.Transport = tr
 	}
+
+	sigBase, err := configuredSignatureStorageBase(ctx, ref, write)
+	if err != nil {
+		return nil, err
+	}
+
 	return &dockerClient{
-		registry: registry,
-		username: username,
-		password: password,
-		client:   client,
+		ctx:           ctx,
+		registry:      registry,
+		username:      username,
+		password:      password,
+		client:        client,
+		signatureBase: sigBase,
 	}, nil
 }
 
@@ -98,15 +105,19 @@ func (c *dockerClient) makeRequest(method, url string, headers map[string][]stri
 	}
 
 	url = fmt.Sprintf(baseURL, c.scheme, c.registry) + url
-	return c.makeRequestToResolvedURL(method, url, headers, stream)
+	return c.makeRequestToResolvedURL(method, url, headers, stream, -1)
 }
 
 // makeRequestToResolvedURL creates and executes a http.Request with the specified parameters, adding authentication and TLS options for the Docker client.
+// streamLen, if not -1, specifies the length of the data expected on stream.
 // makeRequest should generally be preferred.
-func (c *dockerClient) makeRequestToResolvedURL(method, url string, headers map[string][]string, stream io.Reader) (*http.Response, error) {
+func (c *dockerClient) makeRequestToResolvedURL(method, url string, headers map[string][]string, stream io.Reader, streamLen int64) (*http.Response, error) {
 	req, err := http.NewRequest(method, url, stream)
 	if err != nil {
 		return nil, err
+	}
+	if streamLen != -1 { // Do not blindly overwrite if streamLen == -1, http.NewRequest above can figure out the length of bytes.Reader and similar objects without us having to compute it.
+		req.ContentLength = streamLen
 	}
 	req.Header.Set("Docker-Distribution-API-Version", "registry/2.0")
 	for n, h := range headers {
@@ -320,14 +331,9 @@ func (c *dockerClient) ping() (*pingResponse, error) {
 		}
 		return pr, nil
 	}
-	scheme := "https"
-	pr, err := ping(scheme)
-	if err != nil {
-		scheme = "http"
-		pr, err = ping(scheme)
-		if err == nil {
-			return pr, nil
-		}
+	pr, err := ping("https")
+	if err != nil && c.ctx != nil && c.ctx.DockerInsecureSkipTLSVerify {
+		pr, err = ping("http")
 	}
 	return pr, err
 }

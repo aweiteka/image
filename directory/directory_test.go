@@ -2,11 +2,14 @@ package directory
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"testing"
 
+	"github.com/containers/image/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,8 +18,9 @@ func TestDestinationReference(t *testing.T) {
 	ref, tmpDir := refToTempDir(t)
 	defer os.RemoveAll(tmpDir)
 
-	dest, err := ref.NewImageDestination("", true)
+	dest, err := ref.NewImageDestination(nil)
 	require.NoError(t, err)
+	defer dest.Close()
 	ref2 := dest.Reference()
 	assert.Equal(t, tmpDir, ref2.StringWithinTransport())
 }
@@ -26,14 +30,18 @@ func TestGetPutManifest(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	man := []byte("test-manifest")
-	dest, err := ref.NewImageDestination("", true)
+	dest, err := ref.NewImageDestination(nil)
 	require.NoError(t, err)
+	defer dest.Close()
 	err = dest.PutManifest(man)
 	assert.NoError(t, err)
+	err = dest.Commit()
+	assert.NoError(t, err)
 
-	src, err := ref.NewImageSource("", true)
+	src, err := ref.NewImageSource(nil, nil)
 	require.NoError(t, err)
-	m, mt, err := src.GetManifest(nil)
+	defer src.Close()
+	m, mt, err := src.GetManifest()
 	assert.NoError(t, err)
 	assert.Equal(t, man, m)
 	assert.Equal(t, "", mt)
@@ -45,14 +53,23 @@ func TestGetPutBlob(t *testing.T) {
 
 	digest := "digest-test"
 	blob := []byte("test-blob")
-	dest, err := ref.NewImageDestination("", true)
+	dest, err := ref.NewImageDestination(nil)
 	require.NoError(t, err)
-	err = dest.PutBlob(digest, bytes.NewReader(blob))
+	defer dest.Close()
+	compress := dest.ShouldCompressLayers()
+	assert.False(t, compress)
+	info, err := dest.PutBlob(bytes.NewReader(blob), types.BlobInfo{Digest: digest, Size: int64(9)})
 	assert.NoError(t, err)
+	err = dest.Commit()
+	assert.NoError(t, err)
+	assert.Equal(t, int64(9), info.Size)
+	hash := sha256.Sum256(blob)
+	assert.Equal(t, "sha256:"+hex.EncodeToString(hash[:]), info.Digest)
 
-	src, err := ref.NewImageSource("", true)
+	src, err := ref.NewImageSource(nil, nil)
 	require.NoError(t, err)
-	rc, size, err := src.GetBlob(digest)
+	defer src.Close()
+	rc, size, err := src.GetBlob(info.Digest)
 	assert.NoError(t, err)
 	defer rc.Close()
 	b, err := ioutil.ReadAll(rc)
@@ -96,11 +113,14 @@ func TestPutBlobDigestFailure(t *testing.T) {
 		return 0, fmt.Errorf(digestErrorString)
 	})
 
-	dest, err := ref.NewImageDestination("", true)
+	dest, err := ref.NewImageDestination(nil)
 	require.NoError(t, err)
-	err = dest.PutBlob(blobDigest, reader)
+	defer dest.Close()
+	_, err = dest.PutBlob(reader, types.BlobInfo{Digest: blobDigest, Size: -1})
 	assert.Error(t, err)
 	assert.Contains(t, digestErrorString, err.Error())
+	err = dest.Commit()
+	assert.NoError(t, err)
 
 	_, err = os.Lstat(blobPath)
 	require.Error(t, err)
@@ -111,38 +131,35 @@ func TestGetPutSignatures(t *testing.T) {
 	ref, tmpDir := refToTempDir(t)
 	defer os.RemoveAll(tmpDir)
 
-	dest, err := ref.NewImageDestination("", true)
+	dest, err := ref.NewImageDestination(nil)
 	require.NoError(t, err)
+	defer dest.Close()
 	signatures := [][]byte{
 		[]byte("sig1"),
 		[]byte("sig2"),
 	}
+	err = dest.SupportsSignatures()
+	assert.NoError(t, err)
 	err = dest.PutSignatures(signatures)
 	assert.NoError(t, err)
+	err = dest.Commit()
+	assert.NoError(t, err)
 
-	src, err := ref.NewImageSource("", true)
+	src, err := ref.NewImageSource(nil, nil)
 	require.NoError(t, err)
+	defer src.Close()
 	sigs, err := src.GetSignatures()
 	assert.NoError(t, err)
 	assert.Equal(t, signatures, sigs)
-}
-
-func TestDelete(t *testing.T) {
-	ref, tmpDir := refToTempDir(t)
-	defer os.RemoveAll(tmpDir)
-
-	src, err := ref.NewImageSource("", true)
-	require.NoError(t, err)
-	err = src.Delete()
-	assert.Error(t, err)
 }
 
 func TestSourceReference(t *testing.T) {
 	ref, tmpDir := refToTempDir(t)
 	defer os.RemoveAll(tmpDir)
 
-	src, err := ref.NewImageSource("", true)
+	src, err := ref.NewImageSource(nil, nil)
 	require.NoError(t, err)
+	defer src.Close()
 	ref2 := src.Reference()
 	assert.Equal(t, tmpDir, ref2.StringWithinTransport())
 }
